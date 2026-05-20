@@ -162,10 +162,12 @@ module.exports = (app) => {
             }
             
             // Production: Create payment with NOWPayments
+            // Add small buffer to avoid "less than minimal" error from gateway fees
+            const gatewayAmount = Math.max(amountNum * 1.005, amountNum + 0.05);
             const paymentResponse = await axios.post(
                 `${NOWPAYMENTS_API}/payment`,
                 {
-                    price_amount: amountNum,
+                    price_amount: parseFloat(gatewayAmount.toFixed(2)),
                     price_currency: 'usd',
                     pay_currency: payCurrency,
                     order_id: orderId,

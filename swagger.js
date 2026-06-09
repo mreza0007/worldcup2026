@@ -115,40 +115,93 @@ const options = {
           properties: {
             _id: {
               type: 'string',
-              description: 'Game ID'
+              description: 'MongoDB document ID'
             },
-            typeGame: {
+            id: {
               type: 'string',
-              description: 'Type of game (group, round16, quarter, semi, final)'
+              description: 'Public match ID (1-104)'
             },
-            homeTeam: {
+            home_team_id: {
               type: 'string',
-              description: 'Home team ID'
+              description: 'Home team public ID'
             },
-            visitingTeam: {
+            away_team_id: {
               type: 'string',
-              description: 'Visiting team ID'
+              description: 'Away team public ID'
             },
-            homeTeamScore: {
-              type: 'number',
+            home_score: {
+              type: 'string',
               description: 'Home team score'
             },
-            visitingTeamScore: {
-              type: 'number',
-              description: 'Visiting team score'
+            away_score: {
+              type: 'string',
+              description: 'Away team score'
+            },
+            home_scorers: {
+              type: 'string',
+              description: 'Home team scorers list or null string'
+            },
+            away_scorers: {
+              type: 'string',
+              description: 'Away team scorers list or null string'
+            },
+            group: {
+              type: 'string',
+              description: 'Group/stage code (A-L, R32, R16, QF, SF, 3RD, FINAL)'
+            },
+            matchday: {
+              type: 'string',
+              description: 'Matchday number as string'
+            },
+            local_date: {
+              type: 'string',
+              description: 'Local date in MM/DD/YYYY HH:mm format'
+            },
+            persian_date: {
+              type: 'string',
+              description: 'Persian calendar date/time'
+            },
+            stadium_id: {
+              type: 'string',
+              description: 'Stadium public ID'
             },
             date: {
               type: 'string',
               format: 'date-time',
-              description: 'Game date and time'
-            },
-            local: {
-              type: 'string',
-              description: 'Stadium location'
+              description: 'Parsed game date/time (ISO)'
             },
             finished: {
-              type: 'boolean',
-              description: 'Whether game is finished'
+              type: 'string',
+              description: 'Match finished status (e.g. FALSE/TRUE)'
+            },
+            time_elapsed: {
+              type: 'string',
+              description: 'Match clock status (e.g. notstarted, 45, HT, FT)'
+            },
+            type: {
+              type: 'string',
+              description: 'Tournament stage type (group, r32, r16, qf, sf, third, final)'
+            },
+            home_team_label: {
+              type: 'string',
+              description: 'Placeholder label for knockout home side'
+            },
+            away_team_label: {
+              type: 'string',
+              description: 'Placeholder label for knockout away side'
+            },
+            homeTeam: {
+              type: 'string',
+              description: 'Internal MongoDB ObjectId reference to home team'
+            },
+            visitingTeam: {
+              type: 'string',
+              description: 'Internal MongoDB ObjectId reference to away team'
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Creation timestamp'
             }
           }
         },

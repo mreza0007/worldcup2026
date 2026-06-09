@@ -478,6 +478,36 @@ Authorization: Bearer ${Token}
 ```
 Returns all 104 matches of the tournament.
 
+**Response Example:**
+```json
+{
+  "games": [
+    {
+      "_id": "679c9c8a5749c4077500e001",
+      "id": "1",
+      "home_team_id": "1",
+      "away_team_id": "2",
+      "home_score": "0",
+      "away_score": "0",
+      "home_scorers": "null",
+      "away_scorers": "null",
+      "group": "A",
+      "matchday": "1",
+      "local_date": "06/11/2026 13:00",
+      "persian_date": "1405-03-21 13:00",
+      "stadium_id": "1",
+      "finished": "FALSE",
+      "time_elapsed": "notstarted",
+      "type": "group",
+      "home_team_name_en": "Mexico",
+      "home_team_name_fa": "مکزیک",
+      "away_team_name_en": "South Africa",
+      "away_team_name_fa": "آفریقای جنوبی"
+    }
+  ]
+}
+```
+
 #### Get Match by ID
 ```http
 GET /get/game/${matchId}
@@ -490,38 +520,50 @@ Authorization: Bearer ${Token}
 **Response Example (Group Match):**
 ```json
 {
-  "id": "1",
-  "home_team_id": "1",
-  "away_team_id": "2",
-  "home_score": 0,
-  "away_score": 0,
-  "group": "A",
-  "matchday": "1",
-  "local_date": "06/11/2026 13:00",
-  "persian_date": "1405-03-21 13:00",
-  "stadium_id": "1",
-  "finished": "FALSE",
-  "type": "group",
-  "home_team_label": "",
-  "away_team_label": ""
+  "game": {
+    "_id": "679c9c8a5749c4077500e001",
+    "id": "1",
+    "home_team_id": "1",
+    "away_team_id": "2",
+    "home_score": "0",
+    "away_score": "0",
+    "home_scorers": "null",
+    "away_scorers": "null",
+    "group": "A",
+    "matchday": "1",
+    "local_date": "06/11/2026 13:00",
+    "persian_date": "1405-03-21 13:00",
+    "stadium_id": "1",
+    "finished": "FALSE",
+    "time_elapsed": "notstarted",
+    "type": "group"
+  }
 }
 ```
 
 **Response Example (Knockout Match — teams TBD):**
 ```json
 {
-  "id": "73",
-  "home_team_id": "0",
-  "away_team_id": "0",
-  "group": "R32",
-  "matchday": "4",
-  "local_date": "06/28/2026 12:00",
-  "persian_date": "1405-04-07 12:00",
-  "stadium_id": "16",
-  "finished": "FALSE",
-  "type": "r32",
-  "home_team_label": "Runner-up Group A",
-  "away_team_label": "Runner-up Group B"
+  "game": {
+    "_id": "679c9c8a5749c4077500e049",
+    "id": "73",
+    "home_team_id": "0",
+    "away_team_id": "0",
+    "home_score": "0",
+    "away_score": "0",
+    "home_scorers": "null",
+    "away_scorers": "null",
+    "group": "R32",
+    "matchday": "4",
+    "local_date": "06/28/2026 12:00",
+    "persian_date": "1405-04-07 12:00",
+    "stadium_id": "16",
+    "finished": "FALSE",
+    "time_elapsed": "notstarted",
+    "type": "r32",
+    "home_team_label": "Runner-up Group A",
+    "away_team_label": "Runner-up Group B"
+  }
 }
 ```
 

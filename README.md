@@ -80,6 +80,7 @@ curl https://worldcup26.ir/get/stadiums
 - 📖 **Swagger UI** — Interactive API documentation with try-it-out
 - 🔒 **JWT Authentication** — Secure access with token-based auth
 - ⚡ **Rate Limiting** — Built-in rate limiter for fair usage
+- 🧠 **Public API Cache** — In-memory cache for high-traffic public GET endpoints
 - 🗜️ **Compression & Helmet** — Optimized & secure responses
 
 ---
@@ -155,9 +156,38 @@ MONGODB_URL=mongodb://localhost:27017/worldcup2026
 JWT_SECRET=your_jwt_secret_key
 SECRET=your_secret_key
 ENABLE_SWAGGER=true
-RATE_LIMIT_WINDOW=60000
+LOG_LEVEL=debug
+RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=500
+PUBLIC_RATE_LIMIT_WINDOW_MS=60000
+PUBLIC_RATE_LIMIT_MAX=120
+PUBLIC_CACHE_TTL_MS=30000
+PUBLIC_CACHE_MAX_ITEMS=1000
 CORS_ORIGINS=*
+```
+
+#### Rate Limit and Cache Settings
+
+These settings are useful in production when public endpoints receive heavy traffic:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Global rate-limit window in milliseconds. `60000` means 60 seconds. |
+| `RATE_LIMIT_MAX` | `500` | Maximum requests per IP for non-public routes inside the global window. |
+| `PUBLIC_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window for public `/get/*` endpoints. |
+| `PUBLIC_RATE_LIMIT_MAX` | `120` | Maximum `/get/*` requests per IP inside the public window. Requests above this return `429`. |
+| `PUBLIC_CACHE_TTL_MS` | `30000` | How long public GET responses stay in memory cache. `30000` means 30 seconds. |
+| `PUBLIC_CACHE_MAX_ITEMS` | `1000` | Maximum number of unique public GET URLs stored in cache. |
+| `LOG_LEVEL` | `debug` in development, `error` in production | Set to `error` in production to avoid noisy per-request logs under heavy traffic. |
+
+Example production values:
+
+```env
+LOG_LEVEL=error
+PUBLIC_RATE_LIMIT_WINDOW_MS=60000
+PUBLIC_RATE_LIMIT_MAX=120
+PUBLIC_CACHE_TTL_MS=30000
+PUBLIC_CACHE_MAX_ITEMS=1000
 ```
 
 ### NPM Scripts

@@ -30,6 +30,24 @@ const GameSchema = new mongoose.Schema({
         type: String,
         default: "null"
     },
+    external_match_id: {
+        type: String,
+        default: ""
+    },
+    provider: {
+        type: String,
+        default: ""
+    },
+    provider_payload_updated_at: {
+        type: Date
+    },
+    raw_provider_status: {
+        type: mongoose.Schema.Types.Mixed
+    },
+    raw_provider_match_id: {
+        type: String,
+        default: ""
+    },
     group: {
         type: String
     },

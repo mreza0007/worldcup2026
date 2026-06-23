@@ -1,47 +1,60 @@
 /**
- * World Cup 2026 — Auto Live Updater
- * 
- * Automatically fetches live match data from Varzesh3 API and updates MongoDB.
- * Replaces manual score entry with real-time automated updates.
- * 
- * Features:
- * - Live scores updated every 3 seconds
- * - Goal scorers with English names (from player database)
- * - Penalty goals detected (eventType 3)
- * - Group standings auto-calculated after each match
- * - Persian → English player name translation via player-names.json
- * 
- * Usage:
- *   node scripts/auto-updater.js
- * 
- * Requirements:
- *   - MongoDB running with the worldcup2026 database seeded
- *   - data/player-names.json (player ID → English name mapping)
- *   - data/team-name-map.json (Persian → English team names)
+ * World Cup 2026 Auto Live Updater
+ *
+ * Fetches live match data from Varzesh3 and updates the existing Game records.
+ * This script intentionally uses the same app database configuration and the
+ * same games collection that import-matches.js and /get/games use.
  */
 
-const { MongoClient } = require("mongodb");
 const fs = require("fs");
 const path = require("path");
 
-const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017";
-const DB_NAME = process.env.DB_NAME || "football";
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000");
+const { loadEnvConfig, config } = require("../config/env");
+loadEnvConfig();
 
-// Load mappings
-const TEAM_MAP = JSON.parse(fs.readFileSync(path.join(__dirname, "../data/team-name-map.json"), "utf8"));
+const mongoose = require("../database");
+const Game = require("../models/game");
+const Team = require("../models/team");
+const Group = require("../models/group");
+
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "3000", 10);
+const PROVIDER = "varzesh3";
+const WORLD_CUP_LEAGUE_ID = 28;
+const KICKOFF_WINDOW_MS = parseInt(
+  process.env.MATCH_KICKOFF_WINDOW_MS || String(18 * 60 * 60 * 1000),
+  10
+);
+
+const TEAM_MAP = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "../data/team-name-map.json"), "utf8")
+);
+
 let playerDb = {};
-try { playerDb = JSON.parse(fs.readFileSync(path.join(__dirname, "../data/player-names.json"), "utf8")); } catch {}
+try {
+  playerDb = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "../data/player-names.json"), "utf8")
+  );
+} catch {}
 
 function getPlayerName(id, faName) {
-  const sid = String(id);
+  const sid = String(id || "");
   if (playerDb[sid]) return playerDb[sid];
-  // Save unknown player for later manual mapping
+
   if (sid && faName && !playerDb[sid]) {
-    playerDb[sid] = faName; // Store Persian name as placeholder
-    try { fs.writeFileSync(path.join(__dirname, "../data/player-names.json"), JSON.stringify(playerDb, null, 2)); } catch {}
+    playerDb[sid] = faName;
+    try {
+      fs.writeFileSync(
+        path.join(__dirname, "../data/player-names.json"),
+        JSON.stringify(playerDb, null, 2)
+      );
+    } catch {}
   }
+
   return faName;
+}
+
+function normalizeName(value) {
+  return String(value || "").trim();
 }
 
 function mapStatus(status, liveTime, isLive) {
@@ -50,19 +63,91 @@ function mapStatus(status, liveTime, isLive) {
   return "notstarted";
 }
 
+function getScore(m, side, fallback) {
+  const fromGoals = side === "home" ? m.goals?.host : m.goals?.guest;
+  const fromTeam = side === "home" ? m.host?.goals : m.guest?.goals;
+  const fromLegacy = side === "home" ? m.hostGoalCount : m.guestGoalCount;
+  return String(fromGoals ?? fromTeam ?? fromLegacy ?? fallback);
+}
+
+function parseProviderKickoff(m) {
+  const candidates = [
+    m.startOnUtc,
+    m.startDateUtc,
+    m.startTimeUtc,
+    m.startOn,
+    m.startDate,
+    m.dateTime,
+  ];
+
+  for (const value of candidates) {
+    if (!value) continue;
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  if (m.date && m.time) {
+    const parsed = new Date(`${m.date} ${m.time}`);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  return null;
+}
+
+function buildRawStatus(m) {
+  return {
+    status: m.status ?? null,
+    statusTitle: m.statusTitle ?? null,
+    liveTime: m.liveTime ?? null,
+    isLive: Boolean(m.isLive),
+    startOnUtc: m.startOnUtc ?? null,
+    date: m.date ?? null,
+    time: m.time ?? null,
+  };
+}
+
+function hasChanged(match, newData) {
+  return Object.entries(newData).some(([key, value]) => {
+    const current = match[key];
+
+    if (value instanceof Date) {
+      return !(current instanceof Date) || current.getTime() !== value.getTime();
+    }
+
+    if (typeof value === "object" && value !== null) {
+      return JSON.stringify(current || null) !== JSON.stringify(value);
+    }
+
+    return String(current ?? "") !== String(value ?? "");
+  });
+}
+
 async function fetchVarzesh3(dayOffset) {
-  const url = dayOffset === 0
-    ? "https://web-api.varzesh3.com/v2.0/livescore/today"
-    : `https://web-api.varzesh3.com/v2.0/livescore/${dayOffset}`;
+  const url =
+    dayOffset === 0
+      ? "https://web-api.varzesh3.com/v2.0/livescore/today"
+      : `https://web-api.varzesh3.com/v2.0/livescore/${dayOffset}`;
+
   const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   const data = await res.json();
   const matches = [];
-  for (const league of data) {
-    if (league.id !== 28) continue; // World Cup league ID on Varzesh3
+
+  for (const league of data || []) {
+    if (league.id !== WORLD_CUP_LEAGUE_ID) continue;
+
+    if (Array.isArray(league.matches)) {
+      matches.push(...league.matches);
+    }
+
     for (const dg of league.dates || []) {
       for (const m of dg.matches || []) matches.push(m);
     }
   }
+
+  console.log(
+    `[auto-updater] Varzesh3 offset ${dayOffset}: fetched ${matches.length} World Cup matches`
+  );
+
   return matches;
 }
 
@@ -73,147 +158,321 @@ async function fetchEvents(matchId) {
       { signal: AbortSignal.timeout(5000) }
     );
     const events = await res.json();
-    const homeGoals = [], awayGoals = [];
-    for (const e of events) {
-      if (e.eventType === 1 || e.eventType === 3) { // Goals + Penalties
+    const homeGoals = [];
+    const awayGoals = [];
+
+    for (const e of events || []) {
+      if (e.eventType === 1 || e.eventType === 3) {
         const id = e.strikerId || e.kickerId || "";
-        const name = getPlayerName(id, e.strickerName || e.kickerName || "Goal");
+        const name = getPlayerName(
+          id,
+          e.strickerName || e.strikerName || e.kickerName || "Goal"
+        );
         const time = e.time || "";
         const pen = e.eventType === 3 ? "(p)" : "";
-        homeGoals.push(...(e.side === 0 ? [`"${name} ${time}'${pen}"`] : []));
-        awayGoals.push(...(e.side === 1 ? [`"${name} ${time}'${pen}"`] : []));
+        const scorer = `"${name} ${time}'${pen}"`;
+
+        if (e.side === 0) homeGoals.push(scorer);
+        if (e.side === 1) awayGoals.push(scorer);
       }
     }
+
     return {
       home_scorers: homeGoals.length ? `{${homeGoals.join(",")}}` : "null",
       away_scorers: awayGoals.length ? `{${awayGoals.join(",")}}` : "null",
     };
-  } catch { return null; }
+  } catch (err) {
+    console.warn(
+      `[auto-updater] Could not fetch events for Varzesh3 match ${matchId}: ${err.message}`
+    );
+    return null;
+  }
 }
 
-async function syncMatches(v3Matches, db) {
-  const teams = await db.collection("teams").find({}).toArray();
+async function buildTeamMap() {
+  const teams = await Team.find({}).lean();
   const teamByFa = {};
-  for (const t of teams) teamByFa[t.name_fa] = t.id;
-  for (const [fa, en] of Object.entries(TEAM_MAP)) {
-    const team = teams.find(t => t.name_en === en);
-    if (team) teamByFa[fa] = team.id;
+
+  for (const team of teams) {
+    teamByFa[normalizeName(team.name_fa)] = team.id;
   }
 
-  const matches = db.collection("matches");
-  let updated = 0;
+  for (const [fa, en] of Object.entries(TEAM_MAP)) {
+    const team = teams.find((t) => t.name_en === en);
+    if (team) teamByFa[normalizeName(fa)] = team.id;
+  }
+
+  return teamByFa;
+}
+
+async function findLocalGame(homeTeamId, awayTeamId, providerMatchId, providerKickoff) {
+  const providerId = String(providerMatchId || "");
+
+  if (providerId) {
+    const linked = await Game.findOne({
+      $or: [
+        { external_match_id: providerId },
+        { raw_provider_match_id: providerId },
+      ],
+    });
+    if (linked) return linked;
+  }
+
+  const candidates = await Game.find({
+    home_team_id: homeTeamId,
+    away_team_id: awayTeamId,
+  }).sort({ date: 1 });
+
+  if (!candidates.length) return null;
+  if (!providerKickoff) return candidates[0];
+
+  const withDistance = candidates
+    .map((game) => ({
+      game,
+      distance: Math.abs(new Date(game.date).getTime() - providerKickoff.getTime()),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  if (withDistance[0].distance <= KICKOFF_WINDOW_MS) {
+    return withDistance[0].game;
+  }
+
+  return null;
+}
+
+async function syncMatches(v3Matches, options = {}) {
+  const teamByFa = await buildTeamMap();
+  const stats = {
+    fetched: v3Matches.length,
+    mappedToLocalTeams: 0,
+    localGamesFound: 0,
+    updated: 0,
+    failedMapping: 0,
+    failedLocalGame: 0,
+  };
 
   for (const m of v3Matches) {
-    const homeTeamId = teamByFa[m.host?.name];
-    const awayTeamId = teamByFa[m.guest?.name];
-    if (!homeTeamId || !awayTeamId) continue;
+    const hostName = normalizeName(m.host?.name || m.hostName);
+    const guestName = normalizeName(m.guest?.name || m.guestName);
+    const homeTeamId = teamByFa[hostName];
+    const awayTeamId = teamByFa[guestName];
 
-    const match = await matches.findOne({ home_team_id: homeTeamId, away_team_id: awayTeamId });
-    if (!match) continue;
+    if (!homeTeamId || !awayTeamId) {
+      stats.failedMapping++;
+      if (options.verbose) {
+        console.warn(
+          `[auto-updater] Team mapping failed: "${hostName}" -> ${homeTeamId || "missing"}, "${guestName}" -> ${awayTeamId || "missing"}`
+        );
+      }
+      continue;
+    }
+
+    stats.mappedToLocalTeams++;
+
+    const providerMatchId = String(m.id || "");
+    const providerKickoff = parseProviderKickoff(m);
+    const match = await findLocalGame(
+      homeTeamId,
+      awayTeamId,
+      providerMatchId,
+      providerKickoff
+    );
+
+    if (!match) {
+      stats.failedLocalGame++;
+      if (options.verbose) {
+        const kickoffText = providerKickoff ? providerKickoff.toISOString() : "unknown kickoff";
+        console.warn(
+          `[auto-updater] Local game not found: ${hostName} vs ${guestName} (${homeTeamId}-${awayTeamId}, ${kickoffText})`
+        );
+      }
+      continue;
+    }
+
+    stats.localGamesFound++;
 
     const newData = {
-      home_score: String(m.goals?.host ?? match.home_score),
-      away_score: String(m.goals?.guest ?? match.away_score),
+      home_score: getScore(m, "home", match.home_score),
+      away_score: getScore(m, "away", match.away_score),
       time_elapsed: mapStatus(m.status, m.liveTime, m.isLive),
       finished: m.status === 7 ? "TRUE" : match.finished,
+      external_match_id: providerMatchId,
+      raw_provider_match_id: providerMatchId,
+      provider: PROVIDER,
+      raw_provider_status: buildRawStatus(m),
     };
 
     if (m.isLive || m.status === 7) {
-      const scorers = await fetchEvents(m.id);
+      const scorers = await fetchEvents(providerMatchId);
       if (scorers) {
         newData.home_scorers = scorers.home_scorers;
         newData.away_scorers = scorers.away_scorers;
       }
     }
 
-    if (match.home_score !== newData.home_score || match.away_score !== newData.away_score ||
-        match.time_elapsed !== newData.time_elapsed || match.finished !== newData.finished ||
-        match.home_scorers !== newData.home_scorers) {
-      await matches.updateOne({ _id: match._id }, { $set: newData });
-      updated++;
+    if (hasChanged(match, newData)) {
+      await Game.updateOne(
+        { _id: match._id },
+        { $set: { ...newData, provider_payload_updated_at: new Date() } }
+      );
+      stats.updated++;
     }
   }
-  return updated;
+
+  console.log(
+    `[auto-updater] Sync stats: fetched=${stats.fetched}, mapped=${stats.mappedToLocalTeams}, local_games_found=${stats.localGamesFound}, updated=${stats.updated}, failed_mapping=${stats.failedMapping}, failed_local_game=${stats.failedLocalGame}`
+  );
+
+  return stats;
 }
 
-async function updateStandings(db) {
-  const matches = await db.collection("matches").find({ finished: "TRUE", type: "group" }).toArray();
-  const teams = await db.collection("teams").find({}).toArray();
+async function updateStandings() {
+  const matches = await Game.find({ finished: "TRUE", type: "group" }).lean();
+  const teams = await Team.find({}).lean();
 
   const stats = {};
   for (const t of teams) {
-    stats[t.id] = { team_id: t.id, mp: 0, w: 0, d: 0, l: 0, pts: 0, gf: 0, ga: 0, gd: 0 };
+    stats[t.id] = {
+      team_id: t.id,
+      mp: 0,
+      w: 0,
+      d: 0,
+      l: 0,
+      pts: 0,
+      gf: 0,
+      ga: 0,
+      gd: 0,
+    };
   }
 
   for (const m of matches) {
-    const h = parseInt(m.home_score) || 0;
-    const a = parseInt(m.away_score) || 0;
+    const h = parseInt(m.home_score, 10) || 0;
+    const a = parseInt(m.away_score, 10) || 0;
     const home = stats[m.home_team_id];
     const away = stats[m.away_team_id];
     if (!home || !away) continue;
 
-    home.mp++; away.mp++;
-    home.gf += h; home.ga += a;
-    away.gf += a; away.ga += h;
+    home.mp++;
+    away.mp++;
+    home.gf += h;
+    home.ga += a;
+    away.gf += a;
+    away.ga += h;
 
-    if (h > a) { home.w++; home.pts += 3; away.l++; }
-    else if (h < a) { away.w++; away.pts += 3; home.l++; }
-    else { home.d++; away.d++; home.pts++; away.pts++; }
+    if (h > a) {
+      home.w++;
+      home.pts += 3;
+      away.l++;
+    } else if (h < a) {
+      away.w++;
+      away.pts += 3;
+      home.l++;
+    } else {
+      home.d++;
+      away.d++;
+      home.pts++;
+      away.pts++;
+    }
 
     home.gd = home.gf - home.ga;
     away.gd = away.gf - away.ga;
   }
 
-  const groups = await db.collection("groups").find({}).toArray();
+  const groups = await Group.find({});
   for (const g of groups) {
-    const updatedTeams = g.teams.map(t => {
+    const updatedTeams = g.teams.map((t) => {
       const s = stats[t.team_id];
       if (!s) return t;
-      return { team_id: t.team_id, mp: String(s.mp), w: String(s.w), d: String(s.d), l: String(s.l), pts: String(s.pts), gf: String(s.gf), ga: String(s.ga), gd: String(s.gd) };
+
+      return {
+        team_id: t.team_id,
+        mp: String(s.mp),
+        w: String(s.w),
+        d: String(s.d),
+        l: String(s.l),
+        pts: String(s.pts),
+        gf: String(s.gf),
+        ga: String(s.ga),
+        gd: String(s.gd),
+      };
     });
-    updatedTeams.sort((a, b) => (parseInt(b.pts) - parseInt(a.pts)) || (parseInt(b.gd) - parseInt(a.gd)) || (parseInt(b.gf) - parseInt(a.gf)));
-    await db.collection("groups").updateOne({ _id: g._id }, { $set: { teams: updatedTeams } });
+
+    updatedTeams.sort(
+      (a, b) =>
+        parseInt(b.pts, 10) - parseInt(a.pts, 10) ||
+        parseInt(b.gd, 10) - parseInt(a.gd, 10) ||
+        parseInt(b.gf, 10) - parseInt(a.gf, 10)
+    );
+
+    await Group.updateOne({ _id: g._id }, { $set: { teams: updatedTeams } });
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+async function fetchOffsets(offsets, verbose) {
+  const byProviderId = new Map();
+
+  for (const offset of offsets) {
+    try {
+      const matches = await fetchVarzesh3(offset);
+      for (const match of matches) {
+        byProviderId.set(String(match.id || `${offset}-${byProviderId.size}`), match);
+      }
+    } catch (err) {
+      if (verbose) {
+        console.warn(
+          `[auto-updater] Varzesh3 offset ${offset} failed: ${err.message}`
+        );
+      }
+    }
+  }
+
+  return [...byProviderId.values()];
+}
 
 async function fullSync() {
   console.log("[auto-updater] Full sync starting...");
-  const client = new MongoClient(MONGO_URI);
-  try {
-    await client.connect();
-    const db = client.db(DB_NAME);
-    const allMatches = [];
-    for (const d of [-2, -1, 0, 1]) {
-      try { allMatches.push(...await fetchVarzesh3(d)); } catch {}
-    }
-    const updated = await syncMatches(allMatches, db);
-    await updateStandings(db);
-    console.log(`[auto-updater] Full sync done: ${updated} matches updated, standings recalculated`);
-  } finally { await client.close(); }
+  console.log(`[auto-updater] MongoDB URL: ${config.MONGODB_URL}`);
+  console.log(`[auto-updater] Mongoose database: ${mongoose.connection.name || "connecting"}`);
+  console.log("[auto-updater] Target collection: games");
+
+  const allMatches = await fetchOffsets([-2, -1, 0, 1], true);
+  console.log(
+    `[auto-updater] Full sync fetched ${allMatches.length} unique Varzesh3 World Cup matches`
+  );
+
+  const stats = await syncMatches(allMatches, { verbose: true });
+  await updateStandings();
+
+  console.log(
+    `[auto-updater] Full sync done: ${stats.updated} matches updated, standings recalculated`
+  );
 }
 
 let lastFinishedCount = 0;
 async function poll() {
-  const client = new MongoClient(MONGO_URI);
   try {
-    await client.connect();
-    const db = client.db(DB_NAME);
     const todayMatches = await fetchVarzesh3(0);
-    await syncMatches(todayMatches, db);
+    await syncMatches(todayMatches, { verbose: false });
 
-    // Recalculate standings if a match just finished
-    const count = await db.collection("matches").countDocuments({ finished: "TRUE" });
+    const count = await Game.countDocuments({ finished: "TRUE" });
     if (count !== lastFinishedCount) {
       lastFinishedCount = count;
-      await updateStandings(db);
-      console.log(`[auto-updater] Standings updated (${count} finished matches)`);
+      await updateStandings();
+      console.log(`[auto-updater] Standings updated (${count} finished games)`);
     }
-  } catch {} finally { await client.close(); }
+  } catch (err) {
+    console.warn(`[auto-updater] Poll failed: ${err.message}`);
+  }
 }
 
-console.log(`[auto-updater] Starting — polling every ${POLL_INTERVAL}ms`);
-fullSync().then(() => {
+async function start() {
+  await mongoose.connection.asPromise();
+  console.log(`[auto-updater] Starting - polling every ${POLL_INTERVAL}ms`);
+  await fullSync();
   setInterval(poll, POLL_INTERVAL);
+}
+
+start().catch((err) => {
+  console.error("[auto-updater] Fatal error:", err);
+  process.exit(1);
 });

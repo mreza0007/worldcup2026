@@ -106,6 +106,28 @@ function buildRawStatus(m) {
   };
 }
 
+function eventText(event) {
+  return [
+    event.title,
+    event.description,
+    event.eventTitle,
+    event.typeTitle,
+    event.name,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isDisallowedGoalEvent(event) {
+  const text = eventText(event);
+  return event.eventType === 5 ||
+    (text.includes("گل") && (text.includes("رد شده") || text.includes("مردود") || text.includes("کمک داور ویدیویی"))) ||
+    (text.includes("goal") && (text.includes("disallow") || text.includes("var")));
+}
+
+function isScoredGoalEvent(event) {
+  if (isDisallowedGoalEvent(event)) return false;
+  return event.eventType === 1 || event.eventType === 3;
+}
+
 function hasChanged(match, newData) {
   return Object.entries(newData).some(([key, value]) => {
     const current = match[key];
@@ -162,7 +184,7 @@ async function fetchEvents(matchId) {
     const awayGoals = [];
 
     for (const e of events || []) {
-      if (e.eventType === 1 || e.eventType === 3) {
+      if (isScoredGoalEvent(e)) {
         const id = e.strikerId || e.kickerId || "";
         const name = getPlayerName(
           id,

@@ -7,12 +7,13 @@ const PROVIDER = 'varzesh3';
 const EVENT_TYPES = {
     1: 'goal',
     2: 'yellow_card',
-    3: 'penalty',
+    3: 'penalty_goal',
     4: 'substitution',
+    5: 'var_disallowed_goal',
     6: 'var',
     7: 'own_goal',
-    8: 'second_yellow_card',
-    9: 'missed_penalty',
+    8: 'red_card',
+    9: 'penalty_missed',
     10: 'injury',
     11: 'half_time',
     12: 'full_time'
@@ -184,18 +185,44 @@ function detectEventType(event) {
         event.name
     ].filter(Boolean).join(' ').toLowerCase();
 
+    const rawType = event.eventType ?? event.type;
+    const explicit = EVENT_TYPES[rawType] || EVENT_TYPES[Number(rawType)];
+
+    if (
+        (text.includes('گل') && (text.includes('رد شده') || text.includes('مردود') || text.includes('کمک داور ویدیویی'))) ||
+        (text.includes('goal') && (text.includes('disallow') || text.includes('var')))
+    ) {
+        return 'var_disallowed_goal';
+    }
+
+    if (
+        text.includes('گل به خودی') ||
+        text.includes('own goal') ||
+        explicit === 'own_goal'
+    ) {
+        return 'own_goal';
+    }
+
+    if (
+        (text.includes('پنالتی') && (text.includes('از دست') || text.includes('مهار') || text.includes('خراب') || text.includes('گل نشد'))) ||
+        (text.includes('penalty') && (text.includes('miss') || text.includes('saved')))
+    ) {
+        return 'penalty_missed';
+    }
+
+    if (explicit) return explicit;
+
     if (text.includes('\u062a\u0639\u0648\u06cc\u0636')) return 'substitution';
     if (text.includes('\u06a9\u0627\u0631\u062a \u0632\u0631\u062f')) return 'yellow_card';
     if (text.includes('\u06a9\u0627\u0631\u062a \u0642\u0631\u0645\u0632')) return 'red_card';
-    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc')) return 'penalty';
+    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc') && text.includes('\u06af\u0644')) return 'penalty_goal';
+    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc')) return 'unknown';
     if (text.includes('\u06af\u0644')) return 'goal';
 
-    const explicit = EVENT_TYPES[event.eventType] || EVENT_TYPES[event.type];
-    if (explicit) return explicit;
-
     if (text.includes('own')) return 'own_goal';
-    if (text.includes('penalty') && text.includes('miss')) return 'missed_penalty';
-    if (text.includes('penalty')) return 'penalty';
+    if (text.includes('penalty') && text.includes('miss')) return 'penalty_missed';
+    if (text.includes('penalty') && text.includes('goal')) return 'penalty_goal';
+    if (text.includes('penalty')) return 'unknown';
     if (text.includes('goal')) return 'goal';
     if (text.includes('yellow')) return 'yellow_card';
     if (text.includes('red')) return 'red_card';
@@ -221,7 +248,11 @@ function assistName(event) {
     return event.assistName ||
         event.assistantName ||
         event.assistPlayerName ||
+        event.passName ||
+        event.passPlayerName ||
+        event.pass_name ||
         event.assist?.name ||
+        event.pass?.name ||
         null;
 }
 
@@ -319,6 +350,11 @@ module.exports = (app) => {
         }
     });
 
+    // Event smoke tests:
+    // curl http://127.0.0.1:3050/match/1/events
+    // curl http://127.0.0.1:3050/match/19/events
+    // curl http://127.0.0.1:3050/match/37/events
+    // curl http://127.0.0.1:3050/match/39/events
     app.get('/match/:id/events', async (req, res) => {
         try {
             const game = await Game.findOne({ id: String(req.params.id) }).lean();

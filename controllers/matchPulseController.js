@@ -143,6 +143,17 @@ function normalizeMatch(game, maps) {
         away_flag: away ? away.flag : null,
         home_logo: null,
         away_logo: null,
+        homeTeam: game.homeTeam || (home ? home._id : null),
+        visitingTeam: game.visitingTeam || (away ? away._id : null),
+        awayTeam: game.awayTeam || game.visitingTeam || (away ? away._id : null),
+        home_team_id: game.home_team_id || null,
+        away_team_id: game.away_team_id || null,
+        home_team_label: game.home_team_label || null,
+        away_team_label: game.away_team_label || null,
+        r32_home_en: game.r32_home_en || null,
+        r32_home_fa: game.r32_home_fa || null,
+        r32_away_en: game.r32_away_en || null,
+        r32_away_fa: game.r32_away_fa || null,
         kickoff,
         kickoff_utc: kickoff,
         date: game.local_date || null,
@@ -163,8 +174,266 @@ function normalizeMatch(game, maps) {
         away_score: score.away_score,
         score: score.score,
         result: buildResult(game, status.status, score.score),
-        last_updated: game.provider_payload_updated_at ? game.provider_payload_updated_at.toISOString() : null
+        last_updated: game.provider_payload_updated_at ? game.provider_payload_updated_at.toISOString() : null,
+        __source: game
     };
+}
+
+function repairMojibake(value) {
+    const text = String(value || '');
+    if (!/[ØÙÛ]/.test(text)) return text;
+
+    try {
+        const windows1252 = new Map([
+            ['€', 0x80], ['‚', 0x82], ['ƒ', 0x83], ['„', 0x84], ['…', 0x85],
+            ['†', 0x86], ['‡', 0x87], ['ˆ', 0x88], ['‰', 0x89], ['Š', 0x8A],
+            ['‹', 0x8B], ['Œ', 0x8C], ['Ž', 0x8E], ['‘', 0x91], ['’', 0x92],
+            ['“', 0x93], ['”', 0x94], ['•', 0x95], ['–', 0x96], ['—', 0x97],
+            ['˜', 0x98], ['™', 0x99], ['š', 0x9A], ['›', 0x9B], ['œ', 0x9C],
+            ['ž', 0x9E], ['Ÿ', 0x9F],
+        ]);
+        const bytes = [];
+        for (const character of text) {
+            const code = character.charCodeAt(0);
+            if (code <= 0xFF) bytes.push(code);
+            else if (windows1252.has(character)) bytes.push(windows1252.get(character));
+            else return text;
+        }
+        const repaired = Buffer.from(bytes).toString('utf8');
+        return repaired.includes('\uFFFD') ? text : repaired;
+    } catch {
+        return text;
+    }
+}
+
+function normalizeDigits(value) {
+    return repairMojibake(value)
+        .replace(/[\u06F0-\u06F9]/g, (digit) => String(digit.charCodeAt(0) - 0x06F0))
+        .replace(/[\u0660-\u0669]/g, (digit) => String(digit.charCodeAt(0) - 0x0660));
+}
+
+function extractPlaceholderRef(value) {
+    const text = normalizeDigits(value).trim();
+    if (!text) return null;
+
+    const english = text.match(/\b(winner|loser)\s+match\s+(\d+)\b/i);
+    if (english) {
+        return { kind: english[1].toLowerCase(), matchId: Number(english[2]) };
+    }
+
+    const persianWinner = text.match(/برنده\s*بازی\s*(\d+)/);
+    if (persianWinner) return { kind: 'winner', matchId: Number(persianWinner[1]) };
+
+    const persianLoser = text.match(/بازنده\s*بازی\s*(\d+)/);
+    if (persianLoser) return { kind: 'loser', matchId: Number(persianLoser[1]) };
+
+    return null;
+}
+
+function isFinished(match) {
+    const source = match?.__source || {};
+    return match?.status === 'finished' ||
+        source.finished === true ||
+        String(source.finished || '').toUpperCase() === 'TRUE' ||
+        String(source.time_elapsed || '').toLowerCase() === 'finished';
+}
+
+function optionalNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function firstNumber(...values) {
+    for (const value of values) {
+        const number = optionalNumber(value);
+        if (number !== null) return number;
+    }
+    return null;
+}
+
+function getPenaltyScores(match) {
+    const source = match?.__source || {};
+    const home = firstNumber(
+        source.home_penalty_score,
+        source.home_penalties,
+        source.penalties?.home,
+        source.penalty_score?.home,
+        source.score?.penalties?.home,
+        match?.home_penalty_score,
+        match?.home_penalties,
+        match?.penalties?.home,
+        match?.penalty_score?.home,
+        match?.score?.penalties?.home
+    );
+    const away = firstNumber(
+        source.away_penalty_score,
+        source.away_penalties,
+        source.penalties?.away,
+        source.penalty_score?.away,
+        source.score?.penalties?.away,
+        match?.away_penalty_score,
+        match?.away_penalties,
+        match?.penalties?.away,
+        match?.penalty_score?.away,
+        match?.score?.penalties?.away
+    );
+
+    return { home, away };
+}
+
+function participantFromMatch(match, side) {
+    if (!match) return null;
+
+    if (side === 'home') {
+        return {
+            name_en: match.home_en,
+            name_fa: match.home_fa,
+            flag: match.home_flag,
+            logo: match.home_logo,
+            teamRef: match.homeTeam,
+            teamId: match.home_team_id,
+        };
+    }
+
+    return {
+        name_en: match.away_en,
+        name_fa: match.away_fa,
+        flag: match.away_flag,
+        logo: match.away_logo,
+        teamRef: match.visitingTeam || match.awayTeam,
+        teamId: match.away_team_id,
+    };
+}
+
+function placeholderForSide(match, side) {
+    const source = match?.__source || {};
+    const values = side === 'home'
+        ? [
+            match.home_en,
+            match.home_fa,
+            match.home_team_label,
+            match.r32_home_en,
+            match.r32_home_fa,
+            source.home_team_label,
+            source.r32_home_en,
+            source.r32_home_fa,
+        ]
+        : [
+            match.away_en,
+            match.away_fa,
+            match.away_team_label,
+            match.r32_away_en,
+            match.r32_away_fa,
+            source.away_team_label,
+            source.r32_away_en,
+            source.r32_away_fa,
+        ];
+
+    for (const value of values) {
+        const reference = extractPlaceholderRef(value);
+        if (reference) return reference;
+    }
+
+    return null;
+}
+
+function resolveMatchSide(match, side, matchById, visited) {
+    const reference = placeholderForSide(match, side);
+    if (!reference) return participantFromMatch(match, side);
+    return resolveParticipant(reference, matchById, visited);
+}
+
+function getDecidingSide(match) {
+    if (!isFinished(match)) return null;
+
+    const homeScore = optionalNumber(match.home_score);
+    const awayScore = optionalNumber(match.away_score);
+    if (homeScore === null || awayScore === null) return null;
+    if (homeScore > awayScore) return 'home';
+    if (awayScore > homeScore) return 'away';
+
+    const penalties = getPenaltyScores(match);
+    if (penalties.home === null || penalties.away === null) return null;
+    if (penalties.home > penalties.away) return 'home';
+    if (penalties.away > penalties.home) return 'away';
+    return null;
+}
+
+function getWinnerParticipant(match, matchById, visited) {
+    const side = getDecidingSide(match);
+    return side ? resolveMatchSide(match, side, matchById, visited) : null;
+}
+
+function getLoserParticipant(match, matchById, visited) {
+    const side = getDecidingSide(match);
+    if (!side) return null;
+    return resolveMatchSide(match, side === 'home' ? 'away' : 'home', matchById, visited);
+}
+
+function resolveParticipant(reference, matchById, visited = new Set()) {
+    const referenceKey = String(reference?.matchId ?? '');
+    if (!reference || visited.has(referenceKey)) return null;
+
+    const sourceMatch = matchById.get(referenceKey);
+    if (!sourceMatch || !isFinished(sourceMatch)) return null;
+
+    const nextVisited = new Set(visited);
+    nextVisited.add(referenceKey);
+    return reference.kind === 'loser'
+        ? getLoserParticipant(sourceMatch, matchById, nextVisited)
+        : getWinnerParticipant(sourceMatch, matchById, nextVisited);
+}
+
+function applyResolvedParticipant(destinationMatch, side, participant) {
+    if (!participant?.name_en) return;
+
+    if (side === 'home') {
+        destinationMatch.home_en = participant.name_en;
+        destinationMatch.home_fa = participant.name_fa || null;
+        destinationMatch.home_flag = participant.flag || null;
+        destinationMatch.home_logo = participant.logo || null;
+        destinationMatch.homeTeam = participant.teamRef || null;
+        destinationMatch.home_team_id = participant.teamId || null;
+        destinationMatch.home_team_label = participant.name_en;
+        if (destinationMatch.r32_home_en) destinationMatch.r32_home_en = participant.name_en;
+        if (destinationMatch.r32_home_fa) destinationMatch.r32_home_fa = participant.name_fa || null;
+        return;
+    }
+
+    destinationMatch.away_en = participant.name_en;
+    destinationMatch.away_fa = participant.name_fa || null;
+    destinationMatch.away_flag = participant.flag || null;
+    destinationMatch.away_logo = participant.logo || null;
+    destinationMatch.visitingTeam = participant.teamRef || null;
+    destinationMatch.awayTeam = participant.teamRef || null;
+    destinationMatch.away_team_id = participant.teamId || null;
+    destinationMatch.away_team_label = participant.name_en;
+    if (destinationMatch.r32_away_en) destinationMatch.r32_away_en = participant.name_en;
+    if (destinationMatch.r32_away_fa) destinationMatch.r32_away_fa = participant.name_fa || null;
+}
+
+function resolveKnockoutParticipants(matches) {
+    const matchById = new Map(matches.map((match) => [String(match.id), match]));
+
+    for (const match of matches) {
+        for (const side of ['home', 'away']) {
+            const reference = placeholderForSide(match, side);
+            if (!reference) continue;
+            const participant = resolveParticipant(reference, matchById, new Set([String(match.id)]));
+            if (participant) applyResolvedParticipant(match, side, participant);
+        }
+    }
+
+    for (const match of matches) delete match.__source;
+    return matches;
+}
+
+function normalizeAndResolveMatches(games, maps) {
+    const matches = games
+        .sort((a, b) => numberOrZero(a.id) - numberOrZero(b.id))
+        .map((game) => normalizeMatch(game, maps));
+    return resolveKnockoutParticipants(matches);
 }
 
 function normalizeLiveMatch(game) {
@@ -328,9 +597,7 @@ module.exports = (app) => {
                 getMaps()
             ]);
 
-            const matches = games
-                .sort((a, b) => numberOrZero(a.id) - numberOrZero(b.id))
-                .map((game) => normalizeMatch(game, maps));
+            const matches = normalizeAndResolveMatches(games, maps);
 
             return res.json({
                 ok: true,
@@ -348,7 +615,11 @@ module.exports = (app) => {
 
     app.get('/match/:id/live', async (req, res) => {
         try {
-            const game = await Game.findOne({ id: String(req.params.id) }).lean();
+            const [games, maps] = await Promise.all([
+                Game.find({}).sort({ id: 1 }).lean(),
+                getMaps()
+            ]);
+            const game = games.find((item) => String(item.id) === String(req.params.id));
             if (!game) {
                 return res.status(404).json({
                     ok: false,
@@ -356,9 +627,15 @@ module.exports = (app) => {
                 });
             }
 
+            const resolvedMatch = normalizeAndResolveMatches(games, maps)
+                .find((item) => String(item.id) === String(req.params.id));
+
             return res.json({
                 ok: true,
-                match: normalizeLiveMatch(game)
+                match: {
+                    ...resolvedMatch,
+                    ...normalizeLiveMatch(game)
+                }
             });
         } catch (err) {
             return res.status(500).json({

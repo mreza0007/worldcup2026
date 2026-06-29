@@ -7,7 +7,7 @@ const PROVIDER = 'varzesh3';
 const EVENT_TYPES = {
     1: 'goal',
     2: 'yellow_card',
-    3: 'penalty_goal',
+    3: 'penalty_event',
     4: 'substitution',
     5: 'var_disallowed_goal',
     6: 'var',
@@ -18,6 +18,21 @@ const EVENT_TYPES = {
     11: 'half_time',
     12: 'full_time'
 };
+
+const SCORING_EVENT_TYPES = new Set(['goal', 'own_goal', 'penalty_goal']);
+
+function hasExplicitScoredPenalty(event) {
+    const booleanSignals = [event.isGoal, event.isScored, event.scored, event.goal, event.isSuccessful];
+    if (booleanSignals.some((value) => value === true || value === 1 || value === '1')) return true;
+
+    const result = String(event.result || event.outcome || event.decision || event.penaltyResult || '').trim().toLowerCase();
+    return ['goal', 'scored', 'score', 'successful', 'converted'].includes(result);
+}
+
+function isScoringEvent(eventOrType) {
+    const normalizedType = typeof eventOrType === 'string' ? eventOrType : detectEventType(eventOrType);
+    return SCORING_EVENT_TYPES.has(normalizedType);
+}
 
 function publicId(id) {
     const n = Number(id);
@@ -210,19 +225,21 @@ function detectEventType(event) {
         return 'penalty_missed';
     }
 
+    if (Number(rawType) === 3) {
+        return hasExplicitScoredPenalty(event) ? 'penalty_goal' : 'penalty_event';
+    }
+
     if (explicit) return explicit;
 
     if (text.includes('\u062a\u0639\u0648\u06cc\u0636')) return 'substitution';
     if (text.includes('\u06a9\u0627\u0631\u062a \u0632\u0631\u062f')) return 'yellow_card';
     if (text.includes('\u06a9\u0627\u0631\u062a \u0642\u0631\u0645\u0632')) return 'red_card';
-    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc') && text.includes('\u06af\u0644')) return 'penalty_goal';
-    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc')) return 'unknown';
+    if (text.includes('\u067e\u0646\u0627\u0644\u062a\u06cc')) return 'penalty_event';
     if (text.includes('\u06af\u0644')) return 'goal';
 
     if (text.includes('own')) return 'own_goal';
     if (text.includes('penalty') && text.includes('miss')) return 'penalty_missed';
-    if (text.includes('penalty') && text.includes('goal')) return 'penalty_goal';
-    if (text.includes('penalty')) return 'unknown';
+    if (text.includes('penalty')) return 'penalty_event';
     if (text.includes('goal')) return 'goal';
     if (text.includes('yellow')) return 'yellow_card';
     if (text.includes('red')) return 'red_card';
@@ -277,7 +294,9 @@ function normalizeEvent(event, index, game, maps) {
         minute: minuteMatch ? Number(minuteMatch[0]) : null,
         raw_minute: rawMinute,
         type: event.eventType || event.type || null,
+        raw_type: event.eventType ?? event.type ?? null,
         normalized_type: normalizedType,
+        is_scoring_event: isScoringEvent(normalizedType),
         team: teamId,
         team_side: side,
         team_name: team ? team.name_en : null,

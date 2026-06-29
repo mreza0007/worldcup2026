@@ -92,6 +92,14 @@ function isRedCardEvent(event) {
   return event.cardType === 3 || event.cardType === 2 || text.includes("کارت قرمز") || text.includes("red card");
 }
 
+function hasExplicitScoredPenalty(event) {
+  const booleanSignals = [event.isGoal, event.isScored, event.scored, event.goal, event.isSuccessful];
+  if (booleanSignals.some((value) => value === true || value === 1 || value === "1")) return true;
+
+  const result = String(event.result || event.outcome || event.decision || event.penaltyResult || "").trim().toLowerCase();
+  return ["goal", "scored", "score", "successful", "converted"].includes(result);
+}
+
 function normalizeEventType(event) {
   if (isDisallowedGoalEvent(event)) return "var_disallowed_goal";
   if (isRedCardEvent(event)) return "red_card";
@@ -101,7 +109,7 @@ function normalizeEventType(event) {
 
   if (type === 1) return "goal";
   if (type === 2) return "yellow_card";
-  if (type === 3) return "penalty_goal";
+  if (type === 3) return hasExplicitScoredPenalty(event) ? "penalty_goal" : "penalty_event";
   if (type === 4) return "substitution";
   if (type === 6) return "var";
   if (type === 7) return "own_goal";
@@ -113,7 +121,7 @@ function normalizeEventType(event) {
   if (text.includes("کارت قرمز")) return "red_card";
   if (text.includes("گل به خودی")) return "own_goal";
   if (text.includes("پنالتی") && (text.includes("از دست") || text.includes("مهار") || text.includes("خراب"))) return "penalty_missed";
-  if (text.includes("پنالتی") && text.includes("گل")) return "penalty_goal";
+  if (text.includes("پنالتی")) return "penalty_event";
   if (text.includes("گل")) return "goal";
   if (text.includes("var")) return "var";
 
@@ -122,7 +130,7 @@ function normalizeEventType(event) {
 
 function isScoredGoalEvent(event) {
   const normalizedType = normalizeEventType(event);
-  return normalizedType === "goal" || normalizedType === "penalty_goal";
+  return ["goal", "own_goal", "penalty_goal"].includes(normalizedType);
 }
 
 function eventMinute(event) {
@@ -146,8 +154,10 @@ function normalizeEvent(event, index) {
     id: event.id || event.eventId || index,
     minute: eventMinute(event),
     raw_minute: eventMinute(event),
-    type: normalizedType,
+    type: event.eventType ?? event.type ?? null,
+    raw_type: event.eventType ?? event.type ?? null,
     normalized_type: normalizedType,
+    is_scoring_event: isScoredGoalEvent(event),
     side: event.side === 0 ? "home" : event.side === 1 ? "away" : "",
     team_side: event.side === 0 ? "home" : event.side === 1 ? "away" : "",
     player: eventPlayerName(event),

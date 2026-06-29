@@ -123,9 +123,18 @@ function isDisallowedGoalEvent(event) {
     (text.includes("goal") && (text.includes("disallow") || text.includes("var")));
 }
 
+function hasExplicitScoredPenalty(event) {
+  const booleanSignals = [event.isGoal, event.isScored, event.scored, event.goal, event.isSuccessful];
+  if (booleanSignals.some((value) => value === true || value === 1 || value === "1")) return true;
+
+  const result = String(event.result || event.outcome || event.decision || event.penaltyResult || "").trim().toLowerCase();
+  return ["goal", "scored", "score", "successful", "converted"].includes(result);
+}
+
 function isScoredGoalEvent(event) {
   if (isDisallowedGoalEvent(event)) return false;
-  return event.eventType === 1 || event.eventType === 3;
+  if (Number(event.eventType) === 3) return hasExplicitScoredPenalty(event);
+  return Number(event.eventType) === 1 || Number(event.eventType) === 7;
 }
 
 function hasChanged(match, newData) {

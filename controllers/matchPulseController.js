@@ -60,6 +60,88 @@ function splitIranDate(value) {
     };
 }
 
+function parseValidDate(value) {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getAuthoritativeKickoff(game) {
+    const raw = game.raw_provider_status || {};
+    const candidates = [
+        raw.startOnUtc,
+        raw.scheduledStartOn,
+        game.kickoff_utc,
+        game.kickoff,
+        game.date,
+    ];
+
+    for (const value of candidates) {
+        const parsed = parseValidDate(value);
+        if (parsed) return parsed;
+    }
+
+    return null;
+}
+
+function formatIranDateTime(date) {
+    if (!date) {
+        return { date_iran: null, time_iran: null, datetime_iran: null };
+    }
+
+    const dateParts = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+        timeZone: 'Asia/Tehran',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        numberingSystem: 'latn',
+    }).formatToParts(date);
+    const timeParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Tehran',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).formatToParts(date);
+    const get = (parts, type) => parts.find((part) => part.type === type)?.value;
+    const year = get(dateParts, 'year');
+    const month = get(dateParts, 'month');
+    const day = get(dateParts, 'day');
+    const hour = get(timeParts, 'hour');
+    const minute = get(timeParts, 'minute');
+    const dateIran = year && month && day ? `${year}/${month}/${day}` : null;
+    const timeIran = hour && minute ? `${hour}:${minute}` : null;
+
+    return {
+        date_iran: dateIran,
+        time_iran: timeIran,
+        datetime_iran: dateIran && timeIran ? `${dateIran} ${timeIran}` : null,
+    };
+}
+
+function formatNewYorkLocalDate(date) {
+    if (!date) return null;
+
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).formatToParts(date);
+    const get = (type) => parts.find((part) => part.type === type)?.value;
+    const month = get('month');
+    const day = get('day');
+    const year = get('year');
+    const hour = get('hour');
+    const minute = get('minute');
+
+    return month && day && year && hour && minute
+        ? `${month}/${day}/${year} ${hour}:${minute}`
+        : null;
+}
+
 function formatStageLabel(game) {
     if (game.type === 'group' && game.group) return `Group ${game.group}`;
     if (!game.type) return game.group || null;
@@ -125,8 +207,14 @@ function normalizeMatch(game, maps) {
     const home = maps.teams[game.home_team_id];
     const away = maps.teams[game.away_team_id];
     const stadium = maps.stadiums[game.stadium_id];
-    const kickoff = game.date instanceof Date ? game.date.toISOString() : null;
-    const iranDate = splitIranDate(game.persian_date);
+    const kickoffDate = getAuthoritativeKickoff(game);
+    const kickoff = kickoffDate ? kickoffDate.toISOString() : null;
+    const iranDate = kickoffDate
+        ? formatIranDateTime(kickoffDate)
+        : splitIranDate(game.persian_date);
+    const localDate = kickoffDate
+        ? formatNewYorkLocalDate(kickoffDate)
+        : (game.local_date || null);
     const status = normalizeStatus(game);
     const score = buildScore(game);
 
@@ -156,7 +244,7 @@ function normalizeMatch(game, maps) {
         r32_away_fa: game.r32_away_fa || null,
         kickoff,
         kickoff_utc: kickoff,
-        date: game.local_date || null,
+        date: localDate,
         date_iran: iranDate.date_iran,
         time_iran: iranDate.time_iran,
         datetime_iran: iranDate.datetime_iran,

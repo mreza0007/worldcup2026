@@ -101,8 +101,11 @@ function buildRawStatus(m) {
     liveTime: m.liveTime ?? null,
     isLive: Boolean(m.isLive),
     startOnUtc: m.startOnUtc ?? null,
+    scheduledStartOn: m.scheduledStartOn ?? null,
     date: m.date ?? null,
     time: m.time ?? null,
+    penalties: m.penalties ?? null,
+    winner: m.winner ?? null,
   };
 }
 

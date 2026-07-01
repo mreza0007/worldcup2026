@@ -20,6 +20,18 @@ const EVENT_TYPES = {
 };
 
 const SCORING_EVENT_TYPES = new Set(['goal', 'own_goal', 'penalty_goal']);
+const EVENT_PRESENTATION = {
+    goal: { label_fa: '\u06af\u0644', label_en: 'Goal', icon: '\u26bd' },
+    own_goal: { label_fa: '\u06af\u0644 \u0628\u0647 \u062e\u0648\u062f\u06cc', label_en: 'Own goal', icon: '\u26bd' },
+    yellow_card: { label_fa: '\u06a9\u0627\u0631\u062a \u0632\u0631\u062f', label_en: 'Yellow card', icon: '\ud83d\udfe8' },
+    red_card: { label_fa: '\u06a9\u0627\u0631\u062a \u0642\u0631\u0645\u0632', label_en: 'Red card', icon: '\ud83d\udfe5' },
+    substitution: { label_fa: '\u062a\u0639\u0648\u06cc\u0636', label_en: 'Substitution', icon: '\ud83d\udd01' },
+    var_disallowed_goal: { label_fa: '\u06af\u0644 \u0645\u0631\u062f\u0648\u062f \u0628\u0627 VAR', label_en: 'Goal disallowed by VAR', icon: '\ud83d\udcf9' },
+    penalty_missed: { label_fa: '\u067e\u0646\u0627\u0644\u062a\u06cc \u062e\u0631\u0627\u0628\u200c\u0634\u062f\u0647', label_en: 'Missed penalty', icon: '\u274c' },
+    penalty_event: { label_fa: '\u067e\u0646\u0627\u0644\u062a\u06cc', label_en: 'Penalty', icon: '\u26bd' },
+    penalty_goal: { label_fa: '\u06af\u0644 \u067e\u0646\u0627\u0644\u062a\u06cc', label_en: 'Penalty goal', icon: '\u26bd' },
+    var: { label_fa: 'VAR', label_en: 'VAR', icon: '\ud83d\udcf9' },
+};
 
 function hasExplicitScoredPenalty(event) {
     const booleanSignals = [event.isGoal, event.isScored, event.scored, event.goal, event.isSuccessful];
@@ -157,11 +169,25 @@ function getExternalMatchId(game) {
 
 function normalizeStatus(game) {
     const raw = game.raw_provider_status || {};
-    const rawMinute = raw.liveTime || game.time_elapsed || null;
     const elapsed = String(game.time_elapsed || '').toLowerCase();
-    const finished = game.finished === 'TRUE' || elapsed === 'finished' || raw.status === 7;
-    const scheduled = !finished && (!elapsed || elapsed === 'notstarted');
-    const isLive = Boolean(raw.isLive) || (!finished && !scheduled);
+    const rawMinute = raw.liveTime ||
+        (!['', 'notstarted', 'finished'].includes(elapsed) ? game.time_elapsed : null);
+    const statusTitleText = repairMojibake(raw.statusTitle || '').trim().toLowerCase();
+    const finishedTitle = statusTitleText === '\u0646\u062a\u06cc\u062c\u0647 \u0646\u0647\u0627\u06cc\u06cc' ||
+        statusTitleText === 'finished' ||
+        statusTitleText === 'ft' ||
+        statusTitleText === 'full time' ||
+        statusTitleText === 'full-time';
+    const finished = Number(raw.status) === 7 || finishedTitle;
+    const liveTitle = [
+        'live', 'half time', 'halftime', 'break', 'extra time',
+        'penalty shootout', 'penalties',
+        '\u0646\u06cc\u0645\u0647', '\u0627\u0633\u062a\u0631\u0627\u062d\u062a',
+        '\u0648\u0642\u062a \u0627\u0636\u0627\u0641\u0647', '\u0636\u0631\u0628\u0627\u062a \u067e\u0646\u0627\u0644\u062a\u06cc'
+    ].some((value) => statusTitleText.includes(value));
+    const scheduled = !finished && !raw.isLive && !liveTitle &&
+        (!elapsed || elapsed === 'notstarted');
+    const isLive = !finished && (Boolean(raw.isLive) || liveTitle || !scheduled);
 
     let status = 'scheduled';
     if (finished) status = 'finished';
@@ -170,7 +196,7 @@ function normalizeStatus(game) {
     const minuteMatch = String(rawMinute || '').match(/\d+/);
     const minute = status === 'live' && minuteMatch ? Number(minuteMatch[0]) : null;
     const statusTitle = raw.statusTitle || (finished ? 'Finished' : isLive ? 'Live' : 'Scheduled');
-    const liveBadge = finished ? 'FT' : isLive ? (rawMinute || 'LIVE') : '';
+    const liveBadge = finished ? 'FT' : isLive ? (rawMinute || raw.statusTitle || 'LIVE') : '';
 
     return {
         status,
@@ -217,6 +243,15 @@ function normalizeMatch(game, maps) {
         : (game.local_date || null);
     const status = normalizeStatus(game);
     const score = buildScore(game);
+    const penaltySummary = buildPenaltySummary(
+        { __source: game },
+        {
+            home_en: teamName(home, game.home_team_label),
+            home_fa: home ? home.name_fa : null,
+            away_en: teamName(away, game.away_team_label),
+            away_fa: away ? away.name_fa : null,
+        }
+    );
 
     return {
         id: publicId(game.id),
@@ -261,7 +296,8 @@ function normalizeMatch(game, maps) {
         home_score: score.home_score,
         away_score: score.away_score,
         score: score.score,
-        result: buildResult(game, status.status, score.score),
+        ...penaltySummary,
+        result: penaltySummary.penalty_winner_side || buildResult(game, status.status, score.score),
         last_updated: game.provider_payload_updated_at ? game.provider_payload_updated_at.toISOString() : null,
         __source: game
     };
@@ -319,11 +355,7 @@ function extractPlaceholderRef(value) {
 }
 
 function isFinished(match) {
-    const source = match?.__source || {};
-    return match?.status === 'finished' ||
-        source.finished === true ||
-        String(source.finished || '').toUpperCase() === 'TRUE' ||
-        String(source.time_elapsed || '').toLowerCase() === 'finished';
+    return match?.status === 'finished';
 }
 
 function optionalNumber(value) {
@@ -342,7 +374,14 @@ function firstNumber(...values) {
 
 function getPenaltyScores(match) {
     const source = match?.__source || {};
+    const raw = source.raw_provider_status || {};
     const home = firstNumber(
+        raw.home_penalty_score,
+        raw.home_penalties,
+        raw.penalties?.home,
+        raw.penalties?.host,
+        raw.penalty_score?.home,
+        raw.score?.penalties?.home,
         source.home_penalty_score,
         source.home_penalties,
         source.penalties?.home,
@@ -355,6 +394,12 @@ function getPenaltyScores(match) {
         match?.score?.penalties?.home
     );
     const away = firstNumber(
+        raw.away_penalty_score,
+        raw.away_penalties,
+        raw.penalties?.away,
+        raw.penalties?.guest,
+        raw.penalty_score?.away,
+        raw.score?.penalties?.away,
         source.away_penalty_score,
         source.away_penalties,
         source.penalties?.away,
@@ -368,6 +413,49 @@ function getPenaltyScores(match) {
     );
 
     return { home, away };
+}
+
+function toPersianDigits(value) {
+    return String(value).replace(/\d/g, (digit) => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
+}
+
+function buildPenaltySummary(match, names = {}, overrideScores = null) {
+    const scores = overrideScores || getPenaltyScores(match);
+    const empty = {
+        home_penalty_score: null,
+        away_penalty_score: null,
+        penalty_winner_side: null,
+        penalty_winner_en: null,
+        penalty_winner_fa: null,
+        penalty_summary_fa: null,
+        penalty_summary_en: null,
+        win_method: null,
+    };
+
+    if (scores.home === null || scores.away === null || scores.home === scores.away) {
+        return empty;
+    }
+
+    const winnerSide = scores.home > scores.away ? 'home' : 'away';
+    const winnerEn = winnerSide === 'home' ? names.home_en : names.away_en;
+    const winnerFa = winnerSide === 'home' ? names.home_fa : names.away_fa;
+    const winnerScore = winnerSide === 'home' ? scores.home : scores.away;
+    const loserScore = winnerSide === 'home' ? scores.away : scores.home;
+
+    return {
+        home_penalty_score: scores.home,
+        away_penalty_score: scores.away,
+        penalty_winner_side: winnerSide,
+        penalty_winner_en: winnerEn || null,
+        penalty_winner_fa: winnerFa || null,
+        penalty_summary_fa: winnerFa
+            ? `${winnerFa} \u062f\u0631 \u0636\u0631\u0628\u0627\u062a \u067e\u0646\u0627\u0644\u062a\u06cc ${toPersianDigits(winnerScore)} - ${toPersianDigits(loserScore)} \u067e\u06cc\u0631\u0648\u0632 \u0634\u062f`
+            : null,
+        penalty_summary_en: winnerEn
+            ? `${winnerEn} won ${winnerScore} - ${loserScore} on penalties`
+            : null,
+        win_method: 'penalty_shootout',
+    };
 }
 
 function participantFromMatch(match, side) {
@@ -549,13 +637,14 @@ function normalizeLiveMatch(game) {
 }
 
 function detectEventType(event) {
-    const text = [
+    const text = repairMojibake([
         event.title,
         event.description,
         event.eventTitle,
         event.typeTitle,
-        event.name
-    ].filter(Boolean).join(' ').toLowerCase();
+        event.name,
+        event.penaltyResultTitle
+    ].filter(Boolean).join(' ')).toLowerCase();
 
     const rawType = event.eventType ?? event.type;
     const explicit = EVENT_TYPES[rawType] || EVENT_TYPES[Number(rawType)];
@@ -576,8 +665,18 @@ function detectEventType(event) {
     }
 
     if (
-        (text.includes('پنالتی') && (text.includes('از دست') || text.includes('مهار') || text.includes('خراب') || text.includes('گل نشد'))) ||
-        (text.includes('penalty') && (text.includes('miss') || text.includes('saved')))
+        Number(event.penaltyResult) === 3 ||
+        (text.includes('پنالتی') && (
+            text.includes('از دست') ||
+            text.includes('مهار') ||
+            text.includes('خراب') ||
+            text.includes('گل نشد')
+        )) ||
+        (text.includes('penalty') && (
+            text.includes('miss') ||
+            text.includes('saved') ||
+            text.includes('not scored')
+        ))
     ) {
         return 'penalty_missed';
     }
@@ -638,8 +737,69 @@ function eventDescription(event, normalizedType) {
         normalizedType;
 }
 
+function eventPresentation(normalizedType) {
+    return EVENT_PRESENTATION[normalizedType] || {
+        label_fa: normalizedType,
+        label_en: normalizedType,
+        icon: null,
+    };
+}
+
+function isPenaltyShootoutEvent(event, game) {
+    const text = repairMojibake([
+        event.description,
+        event.title,
+        event.eventTitle,
+        event.typeTitle,
+        event.penaltyResultTitle,
+        event.phase,
+        event.stage,
+        event.scopeTitle,
+    ].filter(Boolean).join(' ')).toLowerCase();
+    const explicitShootout = event.isPenaltyShootout === true ||
+        event.isShootout === true ||
+        Number(event.scope) === 6 ||
+        String(event.phase || '').toLowerCase() === 'penalty_shootout';
+    const shootoutText = text.includes('penalty shootout') ||
+        text.includes('shootout') ||
+        text.includes('ضربات پنالتی');
+    const rawMinute = optionalNumber(event.rawTime ?? event.minute ?? event.time);
+    const penaltyKickFields = event.penaltyResult !== undefined || event.priority !== undefined;
+    const finalWithoutMinute = normalizeStatus(game).status === 'finished' &&
+        penaltyKickFields && (rawMinute === null || rawMinute === 0);
+
+    return explicitShootout || shootoutText || finalWithoutMinute;
+}
+
+function getShootoutScoresFromEvents(rawEvents, game) {
+    const shootoutEvents = (rawEvents || []).filter((event) => isPenaltyShootoutEvent(event, game));
+    let best = null;
+
+    for (const event of shootoutEvents) {
+        const home = optionalNumber(event.matchResult?.host ?? event.matchResult?.home);
+        const away = optionalNumber(event.matchResult?.guest ?? event.matchResult?.away);
+        if (home === null || away === null) continue;
+        if (!best || home + away >= best.home + best.away) best = { home, away };
+    }
+
+    if (best) return best;
+
+    let home = 0;
+    let away = 0;
+    let hasResult = false;
+    for (const event of shootoutEvents) {
+        if (Number(event.penaltyResult) !== 1) continue;
+        if (event.side === 0) home++;
+        if (event.side === 1) away++;
+        hasResult = true;
+    }
+
+    return hasResult ? { home, away } : null;
+}
+
 function normalizeEvent(event, index, game, maps) {
     const normalizedType = detectEventType(event);
+    const presentation = eventPresentation(normalizedType);
     const side = event.side === 0 ? 'home' : event.side === 1 ? 'away' : null;
     const teamId = side === 'home' ? game.home_team_id : side === 'away' ? game.away_team_id : null;
     const team = teamId ? maps.teams[teamId] : null;
@@ -653,6 +813,9 @@ function normalizeEvent(event, index, game, maps) {
         type: event.eventType || event.type || null,
         raw_type: event.eventType ?? event.type ?? null,
         normalized_type: normalizedType,
+        label_fa: presentation.label_fa,
+        label_en: presentation.label_en,
+        icon: presentation.icon,
         is_scoring_event: isScoringEvent(normalizedType),
         team: teamId,
         team_side: side,
@@ -768,7 +931,22 @@ module.exports = (app) => {
 
                 const rawEvents = await response.json();
                 const maps = await getMaps();
-                const events = (Array.isArray(rawEvents) ? rawEvents : [])
+                const eventList = Array.isArray(rawEvents) ? rawEvents : [];
+                const shootoutScores = getShootoutScoresFromEvents(eventList, game);
+                const home = maps.teams[game.home_team_id];
+                const away = maps.teams[game.away_team_id];
+                const penaltySummary = buildPenaltySummary(
+                    { __source: game },
+                    {
+                        home_en: teamName(home, game.home_team_label),
+                        home_fa: home ? home.name_fa : null,
+                        away_en: teamName(away, game.away_team_label),
+                        away_fa: away ? away.name_fa : null,
+                    },
+                    shootoutScores
+                );
+                const events = eventList
+                    .filter((event) => !isPenaltyShootoutEvent(event, game))
                     .map((event, index) => normalizeEvent(event, index, game, maps));
 
                 return res.json({
@@ -776,6 +954,7 @@ module.exports = (app) => {
                     match_id: publicId(game.id),
                     external_match_id: externalMatchId,
                     provider: game.provider || PROVIDER,
+                    ...penaltySummary,
                     events
                 });
             } catch (err) {
